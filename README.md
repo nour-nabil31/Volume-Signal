@@ -42,6 +42,8 @@ Five indicators each contribute a weighted number of points based on how precise
 - **6-panel dashboard** — Price vs VWAP, OBV, A/D Line, CMF, Volume bars, Volume Ratio
 - **Warm finance visual theme** — cream, gold, burgundy palette distinct from standard charting libraries
 - **HTML summary table** — all 10 indicators with signal badges rendered in Jupyter
+- **Signal persistence filter** — only confirms a signal after it holds consistently for N consecutive days, eliminating single-day noise
+- **Score history tracking** — automatically logs each day's score to a local JSON file, builds a running record per ticker
 - **Dynamic** — works with any ticker, any time period, fully adjustable windows
 - **EGX-aware** — calibrated for thin-liquidity markets like the Egyptian Exchange
 
@@ -76,7 +78,7 @@ pip install numpy pandas yfinance matplotlib
 ## Usage
 
 ```python
-from VolumeSignal import volume_signal
+from VolumeSignal import volume_signal, check_signal_consistency, get_score_history
 
 # Minimal call — all defaults
 volume_signal("ABUK.CA")
@@ -90,8 +92,20 @@ volume_signal("COMI.CA", cmf_window=14, vol_short=10, vol_long=30)
 # Shorter history
 volume_signal("ABUK.CA", start="2020-01-01")
 
+# Stricter signal filter — 5 consecutive days instead of 3
+volume_signal("ABUK.CA", required_days=5)
+
+# Raise the buy threshold
+volume_signal("ABUK.CA", threshold_buy=60)
+
 # Table only — no plot
 volume_signal("ABUK.CA", plot=False)
+
+# Check consistency without running the full model
+check_signal_consistency("ABUK.CA")
+
+# View full score history for a ticker
+get_score_history("ABUK.CA")
 ```
 
 ### Parameters
@@ -105,6 +119,10 @@ volume_signal("ABUK.CA", plot=False)
 | `vol_short` | `20` | Short volume MA window |
 | `vol_long` | `50` | Long volume MA window |
 | `vwap_window` | `20` | Rolling VWAP window |
+| `required_days` | `3` | Consecutive days score must hold before signal is confirmed |
+| `threshold_buy` | `50` | Score must stay above this for a Buy confirmation |
+| `threshold_sell` | `35` | Score must stay below this for a Sell confirmation |
+| `history_file` | `"score_history.json"` | Path to persistent score history file |
 | `plot` | `True` | Show the 6-panel dashboard |
 
 ---
@@ -171,6 +189,81 @@ One trigger alone is noise. Two or more is a genuine signal.
 
 ---
 
+## Signal Persistence Filter
+
+A single day's score is often noise. The persistence filter requires a score to hold consistently above or below a threshold for N consecutive days before confirming a signal — eliminating false positives from one-off volume spikes or event-driven moves.
+
+Every `volume_signal()` call automatically logs today's score to `score_history.json` and runs the consistency check. The result appears at the bottom of the summary table.
+
+```python
+# How it works in practice
+# Day 1: score = 35 → logged. Not enough history yet.
+# Day 2: score = 57 → logged. Two days, inconsistent.
+#         Output: ⚠ INCONSISTENT — scores: [35, 57] — wait for consistency
+# Day 3: score = 55 → logged. Still inconsistent (Day 1 was 35).
+#         Output: ⚠ INCONSISTENT
+# Day 4: score = 60 → logged. Last 3 days: [57, 55, 60]. All above 50.
+#         Output: ✓ BUY CONFIRMED (3/3 days above 50)
+```
+
+Use the helper functions independently:
+
+```python
+# Check signal status without running the full model
+check_signal_consistency("ABUK.CA")
+
+# View the full score history for any ticker
+get_score_history("ABUK.CA")
+# Output:
+# ───────────────────────────────────────────────────────
+#   Score history — ABUK.CA  (4 days recorded)
+# ───────────────────────────────────────────────────────
+#   2026-05-28  |   35/100  ███████              NEUTRAL
+#   2026-06-02  |   57/100  ███████████          MILD BULLISH
+#   2026-06-03  |   55/100  ███████████          MILD BULLISH
+#   2026-06-04  |   60/100  ████████████         MILD BULLISH
+# ───────────────────────────────────────────────────────
+```
+
+Adjust strictness with parameters:
+
+```python
+volume_signal("ABUK.CA", required_days=3)    # default — faster signals, good for EGX
+volume_signal("AAPL",    required_days=5)    # stricter — better for liquid US stocks
+volume_signal("ABUK.CA", threshold_buy=60)   # raise the entry bar
+volume_signal("ABUK.CA", threshold_sell=25)  # lower the exit bar
+```
+
+> **Design note:** the filter uses a rolling window of the last N days, not N days from the beginning. Recent readings matter more than older ones — a score history of [35, 57, 55, 60] confirms Buy on Day 4 because the last 3 days are all above 50, regardless of Day 1.
+
+---
+
+## Live Backtest — In Progress
+
+> **Results will be published here after June 18, 2026.**
+
+**Methodology:** 15 EGX stocks. Conviction scores recorded on May 28, 2026. Daily closing prices tracked through June 18, 2026. Accuracy measured overall and broken down by conviction band.
+
+| Ticker | Entry Price | Conviction Score | Band | Decision |
+|---|---|---|---|---|
+| ELWA.CA | 2.03 | 85 | Strong Bullish | Buy |
+| SPMD.CA | 0.41 | 75 | Strong Bullish | Buy |
+| ETEL.CA | 97.63 | 72 | Mild Bullish | Buy |
+| ACAMD.CA | 2.19 | 63 | Mild Bullish | Buy |
+| MAAL.CA | 5.16 | 60 | Mild Bullish | Buy |
+| JUFO.CA | 28.09 | 60 | Mild Bullish | Buy |
+| GBCO.CA | 26.60 | 40 | Neutral | Hold |
+| ARAB.CA | 0.20 | 30 | Mild Bearish | Sell |
+| CCAP.CA | 5.12 | 28 | Mild Bearish | Sell |
+| ARVA.CA | 8.08 | 27 | Mild Bearish | Sell |
+| AIFI.CA | 1.76 | 27 | Mild Bearish | Sell |
+| UEGC.CA | 1.32 | 10 | Strong Bearish | Sell |
+| AJWA.CA | 132.92 | 10 | Strong Bearish | Sell |
+| AMES.CA | 52.30 | 10 | Strong Bearish | Sell |
+| ELEC.CA | 2.11 | 8 | Strong Bearish | Sell |
+
+---
+
 ## Honest Limitations
 
 Volume analysis assumes that volume meaningfully reflects institutional order flow — which holds better in liquid markets than thin ones. On EGX, single large trades can disproportionately move OBV and CMF without representing genuine market-wide conviction. The model is EGX-calibrated (using each stock's own volume history as the baseline) but this limitation is worth keeping in mind.
@@ -182,5 +275,3 @@ VolumeSignal is a conviction measurement tool, not a prediction engine. High con
 ## Tech Stack
 
 `Python` · `pandas` · `NumPy` · `yfinance` · `matplotlib`
-
----
